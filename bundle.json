@@ -1,0 +1,53 @@
+{
+    "name": "@ohos/ai_mindspore",
+    "description": "AI Framework.",
+    "version": "3.1",
+    "license": "Apache License 2.0",
+    "pubiishAs": "code-segment",
+    "segment": {
+      "destPath": "third_party/mindspore"
+    },
+    "dirs": {},
+    "scripts": {},
+    "component": {
+      "name": "mindspore",
+      "subsystem": "ai",
+      "syscap": [
+        "SystemCapability.Ai.MindSpore"
+      ],
+      "feature": [],
+      "adapted_system_type": [
+        "standard"
+      ],
+      "rom": "",
+      "ram": "",
+      "deps": {
+        "components": [
+          "hiviewdfx_hilog_native"
+        ],
+        "third_party": []
+      },
+      "build": {
+        "sub_component": [
+          "//third_party/mindspore/:mindspore-all"
+        ],
+        "inner_kits": [
+          {
+            "name": "//third_party/mindspore/:mindir",
+            "header": {
+              "header_files": [
+                "mindir_lite_graph.h",
+                "mindir_primitive.h",
+                "mindir_tensor.h",
+                "mindir_types.h",
+                "mindir.h"
+              ],
+              "header_base": "//third_party/mindspore/mindspore-src/source/mindspore/lite/mindir/include"
+            }
+          }
+        ],
+        "test": [
+        ]
+      }
+    }
+  }

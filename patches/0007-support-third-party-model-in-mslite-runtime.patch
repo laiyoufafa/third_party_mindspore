@@ -1,0 +1,829 @@
+From f34ebb471d558dda42c76143d886aad445ae473e Mon Sep 17 00:00:00 2001
+From: Zhu Guodong <zhuguodong0001@163.com>
+Date: Tue, 18 Apr 2023 16:18:26 +0800
+Subject: [PATCH] auto-apply
+ 0007-support-third-party-model-in-nnrt-delegate.patch
+
+---
+ include/api/context.h                         | 10 +++
+ include/c_api/types_c.h                       |  2 +-
+ .../plugin/device/cpu/kernel/nnacl/op_base.h  |  1 +
+ mindspore/lite/BUILD.gn                       |  1 +
+ mindspore/lite/include/context.h              |  5 ++
+ mindspore/lite/include/lite_types.h           |  1 +
+ mindspore/lite/mindir/src/utils.cc            |  2 +-
+ mindspore/lite/src/CMakeLists.txt             |  6 +-
+ mindspore/lite/src/common/context_util.cc     | 14 +++-
+ .../common/ops/populate/custom_populate.cc    | 11 +++
+ .../lite/src/runtime/cxx_api/converters.cc    | 10 +++
+ .../lite/src/runtime/cxx_api/converters.h     |  1 +
+ .../src/runtime/delegate/nnrt/CMakeLists.txt  | 27 ++-----
+ .../delegate/nnrt/checker/primitive_check.cc  |  2 +
+ .../runtime/delegate/nnrt/nnrt_delegate.cc    | 13 ++--
+ .../delegate/nnrt/nnrt_model_kernel.cc        |  2 +-
+ .../src/runtime/delegate/nnrt/nnrt_stub.cc    | 78 +++++++++++++++++++
+ mindspore/lite/src/runtime/infer_manager.cc   |  3 +-
+ mindspore/lite/src/runtime/inner_context.cc   | 12 ++-
+ .../lite/src/runtime/kernel/cpu/BUILD.gn      |  1 +
+ .../runtime/kernel/cpu/base/custom_base.cc    | 46 +++++++++++
+ .../src/runtime/kernel/cpu/base/custom_base.h | 43 ++++++++++
+ mindspore/lite/src/runtime/lite_session.cc    | 22 ++++++
+ mindspore/lite/src/runtime/lite_session.h     |  1 +
+ mindspore/lite/src/runtime/scheduler.cc       | 15 +++-
+ .../lite/tools/benchmark/benchmark_base.cc    |  2 +-
+ .../lite/tools/benchmark/benchmark_base.h     |  2 +-
+ .../lite/tools/benchmark/benchmark_c_api.cc   |  4 +
+ .../tools/benchmark/benchmark_unified_api.cc  |  5 ++
+ 29 files changed, 303 insertions(+), 39 deletions(-)
+ create mode 100644 mindspore/lite/src/runtime/delegate/nnrt/nnrt_stub.cc
+ create mode 100644 mindspore/lite/src/runtime/kernel/cpu/base/custom_base.cc
+ create mode 100644 mindspore/lite/src/runtime/kernel/cpu/base/custom_base.h
+
+diff --git a/include/api/context.h b/include/api/context.h
+index 93ed2706..d88b9d44 100644
+--- a/include/api/context.h
++++ b/include/api/context.h
+@@ -31,6 +31,8 @@ enum DeviceType {
+   kAscend,
+   kAscend910,
+   kAscend310,
++  //ohos-only device range[60,80)
++  kNNRt = 60,
+   // add new type here
+   kInvalidDeviceType = 100,
+ };
+@@ -510,5 +512,13 @@ void AscendDeviceInfo::SetBufferOptimizeMode(const std::string &buffer_optimize_
+   SetBufferOptimizeMode(StringToChar(buffer_optimize_mode));
+ }
+ std::string AscendDeviceInfo::GetBufferOptimizeMode() const { return CharToString(GetBufferOptimizeModeChar()); }
++
++class MS_API NNRTDeviceInfo : public DeviceInfoContext {
++ public:
++  /// \brief Get the type of this DeviceInfoContext.
++  ///
++  /// \return Type of this DeviceInfoContext.
++  enum DeviceType GetDeviceType() const override { return DeviceType::kNNRt; };
++};
+ }  // namespace mindspore
+ #endif  // MINDSPORE_INCLUDE_API_CONTEXT_H
+diff --git a/include/c_api/types_c.h b/include/c_api/types_c.h
+index dba54ffa..fdf91f5a 100644
+--- a/include/c_api/types_c.h
++++ b/include/c_api/types_c.h
+@@ -40,7 +40,7 @@ typedef enum OH_AI_DeviceType {
+   OH_AI_DEVICETYPE_KIRIN_NPU,
+   // add new type here
+   // ohos-only device range: [60, 80)
+-  OH_AI_DEVICETYPE__NNRT = 60,
++  OH_AI_DEVICETYPE_NNRT = 60,
+   OH_AI_DEVICETYPE_INVALID = 100,
+ } OH_AI_DeviceType;
+ 
+diff --git a/mindspore/ccsrc/plugin/device/cpu/kernel/nnacl/op_base.h b/mindspore/ccsrc/plugin/device/cpu/kernel/nnacl/op_base.h
+index 26221249..5876bdf6 100644
+--- a/mindspore/ccsrc/plugin/device/cpu/kernel/nnacl/op_base.h
++++ b/mindspore/ccsrc/plugin/device/cpu/kernel/nnacl/op_base.h
+@@ -519,6 +519,7 @@ enum PrimType {
+   PrimType_Inner_Identity = 10002,
+   PrimType_Inner_ShapeFusion = 10003,
+   PrimType_Inner_GraphKernel = 10004,
++  PrimType_Inner_ThirdPartyModel = 10005,
+   PrimType_InnerOpMax,
+   PrimType_InnerOpMin = PrimType_Inner_ToFormat
+ };
+diff --git a/mindspore/lite/BUILD.gn b/mindspore/lite/BUILD.gn
+index a472283a..d761b69c 100644
+--- a/mindspore/lite/BUILD.gn
++++ b/mindspore/lite/BUILD.gn
+@@ -197,6 +197,7 @@ cpu_kernel_sources = [
+   "src/runtime/kernel/cpu/base/constant_of_shape.cc",
+   "src/runtime/kernel/cpu/base/convolution_base.cc",
+   "src/runtime/kernel/cpu/base/crop_base.cc",
++  "src/runtime/kernel/cpu/base/custom_base.cc",
+   "src/runtime/kernel/cpu/base/detection_post_process_base.cc",
+   "src/runtime/kernel/cpu/base/format_transpose.cc",
+   "src/runtime/kernel/cpu/base/gather_base.cc",
+diff --git a/mindspore/lite/include/context.h b/mindspore/lite/include/context.h
+index 915f2f66..22bd24df 100644
+--- a/mindspore/lite/include/context.h
++++ b/mindspore/lite/include/context.h
+@@ -50,12 +50,17 @@ typedef struct AscendDeviceInfo {
+   std::string batch_size_;
+   std::string image_size_;
+ } AscendDeviceInfo;
++
++typedef struct NNRtDeviceInfo {
++} NNRtDeviceInfo;
++
+ /// \brief DeviceInfo defined for backend's configuration information.
+ struct DeviceInfo {
+   CpuDeviceInfo cpu_device_info_;
+   GpuDeviceInfo gpu_device_info_;
+   NpuDeviceInfo npu_device_info_;
+   AscendDeviceInfo ascend_device_info_;
++  NNRtDeviceInfo nnrt_device_info_;
+ };
+ 
+ /// \brief DeviceContext defined for holding backend's configuration information.
+diff --git a/mindspore/lite/include/lite_types.h b/mindspore/lite/include/lite_types.h
+index 5fa59923..d1f70b68 100644
+--- a/mindspore/lite/include/lite_types.h
++++ b/mindspore/lite/include/lite_types.h
+@@ -41,6 +41,7 @@ typedef enum {
+   DT_GPU,    /**< GPU device type */
+   DT_NPU,    /**< NPU device type */
+   DT_ASCEND, /**< ASCEND device type */
++  DT_NNRT,   /**< NNRT device type */
+   DT_END     /**< NO device type */
+ } DeviceType;
+ 
+diff --git a/mindspore/lite/mindir/src/utils.cc b/mindspore/lite/mindir/src/utils.cc
+index ca5f7f4b..6a02d6bb 100644
+--- a/mindspore/lite/mindir/src/utils.cc
++++ b/mindspore/lite/mindir/src/utils.cc
+@@ -21,7 +21,7 @@ namespace lite {
+ 
+ // ********** PrimitiveBase **********
+ NodeType MindIR_Primitive_GetType(PrimitivePtr primitive) {
+-  auto prim = flatbuffers::GetMutableRoot<schema::Primitive>(primitive);
++  auto prim = static_cast<schema::Primitive *>(primitive);
+   auto type = prim->value_type();
+   return static_cast<NodeType>(type);
+ }
+diff --git a/mindspore/lite/src/CMakeLists.txt b/mindspore/lite/src/CMakeLists.txt
+index 3ba3c923..16ae2e63 100644
+--- a/mindspore/lite/src/CMakeLists.txt
++++ b/mindspore/lite/src/CMakeLists.txt
+@@ -428,6 +428,11 @@ add_subdirectory(runtime/kernel/cpu)
+ add_library(lite_src_mid OBJECT ${LITE_SRC})
+ add_dependencies(lite_src_mid fbs_src)
+ 
++if(SUPPORT_NNRT)
++    add_subdirectory(runtime/delegate/nnrt)
++    target_link_libraries(lite_src_mid nnrt_mid)
++endif()
++
+ if(MSLITE_ENABLE_ACL AND NOT MSLITE_ENABLE_CLOUD_FUSION_INFERENCE)
+     include_directories(${TOP_DIR}/graphengine/inc/external)
+     add_subdirectory(extendrt/kernel/ascend)
+@@ -493,7 +498,6 @@ if(MSLITE_ENABLE_MINDRT)
+ endif()
+ 
+ if (SUPPORT_NNRT)
+-    add_subdirectory(runtime/delegate/nnrt)
+     target_link_libraries(mindspore-lite nnrt_mid)
+     target_link_libraries(mindspore-lite_static nnrt_mid)
+ endif()
+diff --git a/mindspore/lite/src/common/context_util.cc b/mindspore/lite/src/common/context_util.cc
+index c446fc6e..ac8534f5 100644
+--- a/mindspore/lite/src/common/context_util.cc
++++ b/mindspore/lite/src/common/context_util.cc
+@@ -106,6 +106,17 @@ std::shared_ptr<mindspore::AscendDeviceInfo> AscendDeviceInfoFromAscendDeviceCon
+   ascend_info->SetDynamicImageSize(ascend_context.device_info_.ascend_device_info_.image_size_);
+   return ascend_info;
+ }
++
++std::shared_ptr<mindspore::NNRTDeviceInfo> NNRtDeviceInfoFromNNRtDeviceContext(
++  const lite::DeviceContext &nnrt_context) {
++  if (nnrt_context.device_type_ != DT_NNRT) {
++    MS_LOG(ERROR) << "Function input parameter is not NNRt context.";
++    return nullptr;
++  }
++  auto nnrt_info = std::make_shared<mindspore::NNRTDeviceInfo>();
++  MS_CHECK_TRUE_RET(nnrt_info != nullptr, nullptr);
++  return nnrt_info;
++}
+ }  // namespace
+ 
+ mindspore::Context *MSContextFromContext(const lite::Context *context) {
+@@ -127,7 +138,8 @@ mindspore::Context *MSContextFromContext(const lite::Context *context) {
+     transfer_funcs = {{DT_CPU, CPUDeviceInfoFromCPUDeviceContext},
+                       {DT_GPU, GPUDeviceInfoFromGPUDeviceContext},
+                       {DT_NPU, NPUDeviceInfoFromNPUDeviceContext},
+-                      {DT_ASCEND, AscendDeviceInfoFromAscendDeviceContext}};
++                      {DT_ASCEND, AscendDeviceInfoFromAscendDeviceContext},
++                      {DT_NNRT, NNRtDeviceInfoFromNNRtDeviceContext}};
+   for (auto &device_context : context->device_list_) {
+     auto device_type = device_context.device_type_;
+     if (transfer_funcs.find(device_type) == transfer_funcs.end()) {
+diff --git a/mindspore/lite/src/common/ops/populate/custom_populate.cc b/mindspore/lite/src/common/ops/populate/custom_populate.cc
+index b0b21047..f1506ece 100644
+--- a/mindspore/lite/src/common/ops/populate/custom_populate.cc
++++ b/mindspore/lite/src/common/ops/populate/custom_populate.cc
+@@ -51,6 +51,17 @@ OpParameter *PopulateCustomParameter(const void *prim) {
+     // Just use the attr_data pointer to save the prim directly, the inner value is parsed as necessary.
+     param->attr_data[0] = static_cast<char *>(const_cast<void *>(prim));
+     return reinterpret_cast<OpParameter *>(param);
++  } else if (type == "ThirdPartyModel") {
++    auto *param = static_cast<CustomParameter *>(malloc(sizeof(CustomParameter)));
++    if (param == nullptr) {
++      MS_LOG(ERROR) << "malloc CustomParameter failed.";
++      return nullptr;
++    }
++    memset(param, 0, sizeof(CustomParameter));
++    param->op_parameter_.type_ = PrimType_Inner_ThirdPartyModel;
++    // Just use the attr_data pointer to save the prim directly, the inner value is parsed as necessary.
++    param->attr_data[0] = static_cast<char *>(const_cast<void *>(prim));
++    return reinterpret_cast<OpParameter *>(param);
+   } else {
+     MS_LOG(ERROR) << "Unsupported custom type: " << type;
+   }
+diff --git a/mindspore/lite/src/runtime/cxx_api/converters.cc b/mindspore/lite/src/runtime/cxx_api/converters.cc
+index 02f1c9ec..23a02778 100644
+--- a/mindspore/lite/src/runtime/cxx_api/converters.cc
++++ b/mindspore/lite/src/runtime/cxx_api/converters.cc
+@@ -72,6 +72,12 @@ Status ContextUtils::AddAscendDevice(lite::InnerContext *inner_context, DeviceIn
+   return kSuccess;
+ }
+ 
++Status ContextUtils::AddNNRtDevice(lite::InnerContext *inner_context) {
++  lite::DeviceInfo device_info = {0};
++  inner_context->device_list_.push_back({lite::DT_NNRT, device_info});
++  return kSuccess;
++}
++
+ lite::InnerContext *ContextUtils::Convert(Context *context) {
+   auto inner_context = std::make_unique<lite::InnerContext>();
+   if ((context == nullptr) || (inner_context == nullptr)) {
+@@ -115,6 +121,8 @@ lite::InnerContext *ContextUtils::Convert(Context *context) {
+       ret = AddNpuDevice(npu_context->GetFrequency(), inner_context.get());
+     } else if (device->GetDeviceType() == kAscend) {
+       ret = AddAscendDevice(inner_context.get(), device.get());
++    } else if (device->GetDeviceType() == kNNRt) {
++      ret = AddNNRtDevice(inner_context.get());
+     }
+     if (ret != kSuccess) {
+       MS_LOG(ERROR) << "Add device failed!";
+@@ -153,6 +161,8 @@ lite::InnerContext *ContextUtils::Convert(const ContextC *context_c) {
+                          device_info_c->provider_device, device_info_c->allocator, inner_context.get());
+     } else if (device_info_c->device_type == OH_AI_DEVICETYPE_KIRIN_NPU) {
+       ret = AddNpuDevice(device_info_c->frequency, inner_context.get());
++    } else if (device_info_c->device_type == OH_AI_DEVICETYPE_NNRT) {
++      ret = AddNNRtDevice(inner_context.get());
+     }
+     if (ret != kSuccess) {
+       MS_LOG(ERROR) << "Add device failed!";
+diff --git a/mindspore/lite/src/runtime/cxx_api/converters.h b/mindspore/lite/src/runtime/cxx_api/converters.h
+index 7eb2df24..11338875 100644
+--- a/mindspore/lite/src/runtime/cxx_api/converters.h
++++ b/mindspore/lite/src/runtime/cxx_api/converters.h
+@@ -45,6 +45,7 @@ class ContextUtils {
+                              lite::InnerContext *inner_context);
+   static Status AddNpuDevice(int frequency, lite::InnerContext *inner_context);
+   static Status AddAscendDevice(lite::InnerContext *inner_context, DeviceInfoContext *device);
++  static Status AddNNRtDevice(lite::InnerContext *inner_context);
+   static bool IsAffinityModeValid(int affinity_mode) {
+     return affinity_mode >= lite::NO_BIND && affinity_mode <= lite::MID_CPU;
+   }
+diff --git a/mindspore/lite/src/runtime/delegate/nnrt/CMakeLists.txt b/mindspore/lite/src/runtime/delegate/nnrt/CMakeLists.txt
+index 70aa63f3..625459e2 100644
+--- a/mindspore/lite/src/runtime/delegate/nnrt/CMakeLists.txt
++++ b/mindspore/lite/src/runtime/delegate/nnrt/CMakeLists.txt
+@@ -1,30 +1,13 @@
+ include_directories(${DDK_PATH})
+ include_directories($(CCSRC_DIR)/plugin/device/cpu/kernel)
++include_directories(${CMAKE_SOURCE_DIR}/../../../../../../foundation/ai/neural_network_runtime/)
+ 
+ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+-#include_directories(/home/tony/wty/workspace/ohos/third_party/mindspore/mindspore/lite/mindir/include/inner)
+-#include_directories(/home/tony/wty/workspace/ohos/third_party/mindspore/mindspore/lite/mindir/include)
++
+ file(GLOB_RECURSE NNRT_SRC
+         ${CMAKE_CURRENT_SOURCE_DIR}/*.cc
+ )
+-
+-#add_library(hiai SHARED IMPORTED)
+-#set_target_properties(hiai PROPERTIES IMPORTED_LOCATION
+-#        ${DDK_LIB_PATH}/libhiai.so)
+-#add_library(hiai_ir SHARED IMPORTED)
+-#set_target_properties(hiai_ir PROPERTIES IMPORTED_LOCATION
+-#        ${DDK_LIB_PATH}/libhiai_ir.so)
+-#add_library(hiai_ir_build SHARED IMPORTED)
+-#set_target_properties(hiai_ir_build PROPERTIES IMPORTED_LOCATION
+-#        ${DDK_LIB_PATH}/libhiai_ir_build.so)
+-#add_library(npu_kernel_mid OBJECT ${NPU_RUNTIME_SRC})
+-#add_dependencies(npu_kernel_mid fbs_src)
+-#target_link_libraries(
+-#        npu_kernel_mid
+-#        hiai
+-#        hiai_ir
+-#        hiai_ir_build
+-#)
+-
+ file(GLOB convert_source checker/*.cc)
+-add_library(nnr_mid OBJECT ${NNRT_SRC} ${convert_source} )
+\ No newline at end of file
++
++add_library(nnrt_mid OBJECT ${NNRT_SRC} ${convert_source})
++target_include_directories(nnrt_mid PUBLIC ${CMAKE_SOURCE_DIR}/../../../../../../foundation/ai/neural_network_runtime/)
+\ No newline at end of file
+diff --git a/mindspore/lite/src/runtime/delegate/nnrt/checker/primitive_check.cc b/mindspore/lite/src/runtime/delegate/nnrt/checker/primitive_check.cc
+index a647796c..c2b35393 100644
+--- a/mindspore/lite/src/runtime/delegate/nnrt/checker/primitive_check.cc
++++ b/mindspore/lite/src/runtime/delegate/nnrt/checker/primitive_check.cc
+@@ -109,6 +109,8 @@ Status CheckPrimitiveSupported(const schema::Primitive *primitive) {
+         return mindspore::kSuccess;
+       case schema::PrimitiveType_Unsqueeze:
+         return mindspore::kSuccess;
++      case schema::PrimitiveType_Custom:
++        return mindspore::kSuccess;
+       default: {
+         MS_LOG(WARNING) << "No primitive type :" << (int)(type);
+         return mindspore::kLiteSuccessExit;
+diff --git a/mindspore/lite/src/runtime/delegate/nnrt/nnrt_delegate.cc b/mindspore/lite/src/runtime/delegate/nnrt/nnrt_delegate.cc
+index 34897331..67d4e6c4 100644
+--- a/mindspore/lite/src/runtime/delegate/nnrt/nnrt_delegate.cc
++++ b/mindspore/lite/src/runtime/delegate/nnrt/nnrt_delegate.cc
+@@ -19,8 +19,11 @@
+ #include "interfaces/kits/c/neural_network_runtime.h"
+ #include "interfaces/innerkits/c/neural_network_runtime_inner.h"
+ #include "nnrt_model_kernel.h"
++#include "schema/model_generated.h"
++#include "flatbuffers/flatbuffers.h"
+ 
+ mindspore::Status mindspore::NNRTDelegate::Build(DelegateModel<schema::Primitive> *model) {
++  MS_LOG(DEBUG) << "Start to build NNRT model.";
+   if (this->nnrt_lite_graph == nullptr) {
+     MS_LOG(ERROR) << "nnrt_lite_graph is nullptr.";
+     return mindspore::kLiteError;
+@@ -43,7 +46,7 @@ mindspore::Status mindspore::NNRTDelegate::Build(DelegateModel<schema::Primitive
+     OH_NNModel_Destroy(&oh_nnmodel);
+     return mindspore::kLiteError;
+   }
+-  MS_LOG(INFO) << "NNRTDelegate creates NNModel success.";
++  MS_LOG(DEBUG) << "NNRTDelegate creates NNModel success.";
+ 
+   OH_NNCompilation *oh_nn_compilation = nullptr;
+   oh_nn_compilation = OH_NNCompilation_Construct(oh_nnmodel);
+@@ -53,7 +56,7 @@ mindspore::Status mindspore::NNRTDelegate::Build(DelegateModel<schema::Primitive
+     OH_NNModel_Destroy(&oh_nnmodel);
+     return mindspore::kLiteError;
+   }
+-  MS_LOG(INFO) << "NNRTDelegate creates NNCompilation success.";
++  MS_LOG(DEBUG) << "NNRTDelegate creates NNCompilation success.";
+ 
+   const size_t *allDevicesID = nullptr;
+   uint32_t device_count = 0;
+@@ -71,7 +74,7 @@ mindspore::Status mindspore::NNRTDelegate::Build(DelegateModel<schema::Primitive
+     // OH_NNModel_Destroy(&oh_nnmodel);
+     return mindspore::kSuccess;
+   }
+-  MS_LOG(INFO) << "NNRTDelegate GetAllDevicesID success.";
++  MS_LOG(DEBUG) << "NNRTDelegate GetAllDevicesID success. device_count: " << device_count;
+ 
+   // check if model ops are supported
+   const bool *issupported = nullptr;
+@@ -98,7 +101,7 @@ mindspore::Status mindspore::NNRTDelegate::Build(DelegateModel<schema::Primitive
+     OH_NNModel_Destroy(&oh_nnmodel);
+     return mindspore::kSuccess;
+   }
+-  MS_LOG(INFO) << "NNRtDelegate supports all op in this model.";
++  MS_LOG(DEBUG) << "NNRtDelegate supports all op in this model.";
+ 
+   ret_code = OH_NNCompilation_SetDevice(oh_nn_compilation, allDevicesID[0]);
+ 
+@@ -141,7 +144,7 @@ mindspore::Status mindspore::NNRTDelegate::Build(DelegateModel<schema::Primitive
+   KernelIter end = model->EndKernelIterator();
+   model->Replace(from, end, nnr_model_kernel);
+ 
+-  MS_LOG(INFO) << "NNRTDelegate build  success.";
++  MS_LOG(DEBUG) << "NNRTDelegate build success.";
+   return mindspore::kSuccess;
+ }
+ 
+diff --git a/mindspore/lite/src/runtime/delegate/nnrt/nnrt_model_kernel.cc b/mindspore/lite/src/runtime/delegate/nnrt/nnrt_model_kernel.cc
+index 5acf2e9a..b91522b0 100644
+--- a/mindspore/lite/src/runtime/delegate/nnrt/nnrt_model_kernel.cc
++++ b/mindspore/lite/src/runtime/delegate/nnrt/nnrt_model_kernel.cc
+@@ -97,7 +97,7 @@ OH_NN_DataType mindspore::NNRTModelKernel::ConvertDataType(mindspore::DataType d
+ }
+ int mindspore::NNRTModelKernel::PrepareInputs() {
+   auto input_tensors = this->inputs();
+-  for (int i = 0; i < input_tensors.size(); i++) {
++  for (size_t i = 0; i < input_tensors.size(); i++) {
+     auto tensor = input_tensors[i];
+     auto tensor_shape = tensor.Shape();
+     auto tmp_quant_param = tensor.QuantParams();
+diff --git a/mindspore/lite/src/runtime/delegate/nnrt/nnrt_stub.cc b/mindspore/lite/src/runtime/delegate/nnrt/nnrt_stub.cc
+new file mode 100644
+index 00000000..886ac304
+--- /dev/null
++++ b/mindspore/lite/src/runtime/delegate/nnrt/nnrt_stub.cc
+@@ -0,0 +1,78 @@
++/**
++* Copyright 2023 Huawei Technologies Co., Ltd
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++* http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*/
++
++#include "interfaces/kits/c/neural_network_runtime.h"
++#include "interfaces/innerkits/c/neural_network_runtime_inner.h"
++
++OH_NNModel *OH_NNModel_Construct(void) {
++  return NULL;
++}
++
++OH_NN_ReturnCode OH_NNExecutor_Run(OH_NNExecutor *executor) {
++  return OH_NN_SUCCESS;
++}
++
++OH_NN_ReturnCode OH_NNCompilation_Build(OH_NNCompilation *compilation) {
++  return OH_NN_SUCCESS;
++}
++
++void OH_NNCompilation_Destroy(OH_NNCompilation **compilation) {}
++
++OH_NNExecutor *OH_NNExecutor_Construct(OH_NNCompilation *compilation) {
++  return NULL;
++}
++
++void OH_NNExecutor_Destroy(OH_NNExecutor **executor) {}
++
++OH_NNCompilation *OH_NNCompilation_Construct(const OH_NNModel *model) {
++  return NULL;
++}
++
++OH_NN_ReturnCode OH_NNDevice_GetAllDevicesID(const size_t **allDevicesID, uint32_t *deviceCount) {
++  return OH_NN_SUCCESS;
++}
++
++OH_NN_ReturnCode OH_NNExecutor_SetOutput(OH_NNExecutor *executor,
++                                         uint32_t outputIndex,
++                                         void *dataBuffer,
++                                         size_t length) {
++  return OH_NN_SUCCESS;
++}
++
++OH_NN_ReturnCode OH_NNCompilation_SetDevice(OH_NNCompilation *compilation, size_t deviceID) {
++  return OH_NN_SUCCESS;
++}
++
++OH_NN_ReturnCode OH_NNExecutor_SetInput(OH_NNExecutor *executor,
++                                        uint32_t inputIndex,
++                                        const OH_NN_Tensor *tensor,
++                                        const void *dataBuffer,
++                                        size_t length) {
++  return OH_NN_SUCCESS;
++}
++
++void OH_NNModel_Destroy(OH_NNModel **model) {}
++
++OH_NN_ReturnCode OH_NNModel_GetAvailableOperations(OH_NNModel *model,
++                                                   size_t deviceID,
++                                                   const bool **isSupported,
++                                                   uint32_t *opCount) {
++  return OH_NN_SUCCESS;
++}
++
++OH_NN_ReturnCode OH_NNModel_BuildFromLiteGraph(OH_NNModel *model, const void *liteGraph) {
++  return OH_NN_SUCCESS;
++}
+\ No newline at end of file
+diff --git a/mindspore/lite/src/runtime/infer_manager.cc b/mindspore/lite/src/runtime/infer_manager.cc
+index 4d6794b1..bd3ff802 100644
+--- a/mindspore/lite/src/runtime/infer_manager.cc
++++ b/mindspore/lite/src/runtime/infer_manager.cc
+@@ -139,7 +139,8 @@ int KernelInferShape(const std::vector<lite::Tensor *> &inputs, const std::vecto
+   std::vector<TensorC *> in_tensors;
+   std::vector<TensorC *> out_tensors;
+   if (parameter->type_ == schema::PrimitiveType_PartialFusion || parameter->type_ == schema::PrimitiveType_Switch ||
+-      parameter->type_ == schema::PrimitiveType_Call || parameter->type_ == schema::PrimitiveType_SwitchLayer) {
++      parameter->type_ == schema::PrimitiveType_Call || parameter->type_ == schema::PrimitiveType_SwitchLayer ||
++      parameter->type_ == PrimType_Inner_ThirdPartyModel) {
+     MS_LOG(INFO) << "no need infer shape.";
+     return RET_OK;
+   }
+diff --git a/mindspore/lite/src/runtime/inner_context.cc b/mindspore/lite/src/runtime/inner_context.cc
+index 40557f90..5b70cd21 100644
+--- a/mindspore/lite/src/runtime/inner_context.cc
++++ b/mindspore/lite/src/runtime/inner_context.cc
+@@ -86,11 +86,14 @@ void InnerContext::SetContextDevice(const Context *context) {
+   bool isUserSetGPU = context->device_list_.end() !=
+                       std::find_if(this->device_list_.begin(), this->device_list_.end(),
+                                    [](const DeviceContext &device) { return device.device_type_ == DT_GPU; });
+-  if (isUserSetGPU == false && isUserSetNPU == false) {
++  bool isUserSetNNRt = context->device_list_.end() !=
++                       std::find_if(this->device_list_.begin(), this->device_list_.end(),
++                                    [](const DeviceContext &device) { return device.device_type_ == DT_NNRT; });
++  if ((isUserSetGPU == false) && (isUserSetNPU == false) && (isUserSetNNRt == false)) {
+     return;
+   }
+ 
+-  /* add GPU/NPU first */
++  /* add GPU/NPU/NNRT first */
+   for (auto &device_ctx : context->device_list_) {
+     if (device_ctx.device_type_ != DT_CPU) {
+       this->device_list_.push_back(device_ctx);
+@@ -100,7 +103,7 @@ void InnerContext::SetContextDevice(const Context *context) {
+   /* add CPU */
+   for (auto &device_ctx : context->device_list_) {
+     if (device_ctx.device_type_ == DT_CPU) {
+-      if (isUserSetNPU || (isUserSetGPU && enable_parallel_ == false)) {
++      if (isUserSetNPU || isUserSetNNRt || (isUserSetGPU && enable_parallel_ == false)) {
+         auto cpu_ctx = device_ctx;
+         cpu_ctx.device_info_.cpu_device_info_.cpu_bind_mode_ = NO_BIND;
+         this->device_list_.push_back(cpu_ctx);
+@@ -181,6 +184,9 @@ int InnerContext::Init() {
+   if (IsDeviceTypeEnabled(DT_GPU)) {
+     MS_LOG(DEBUG) << "GPU enabled.";
+   }
++  if (IsDeviceTypeEnabled(DT_NNRT)) {
++    MS_LOG(DEBUG) << "NNRT enabled.";
++  }
+ 
+   InitExperimentalExecEnv();
+   return RET_OK;
+diff --git a/mindspore/lite/src/runtime/kernel/cpu/BUILD.gn b/mindspore/lite/src/runtime/kernel/cpu/BUILD.gn
+index 96083c68..fa20755f 100644
+--- a/mindspore/lite/src/runtime/kernel/cpu/BUILD.gn
++++ b/mindspore/lite/src/runtime/kernel/cpu/BUILD.gn
+@@ -10,6 +10,7 @@ cpu_kernel_sources = [
+     "base/constant_of_shape.cc",
+     "base/convolution_base.cc",
+     "base/crop_base.cc",
++    "base/custom_base.cc",
+     "base/detection_post_process_base.cc",
+     "base/format_transpose.cc",
+     "base/gather_base.cc",
+diff --git a/mindspore/lite/src/runtime/kernel/cpu/base/custom_base.cc b/mindspore/lite/src/runtime/kernel/cpu/base/custom_base.cc
+new file mode 100644
+index 00000000..03477072
+--- /dev/null
++++ b/mindspore/lite/src/runtime/kernel/cpu/base/custom_base.cc
+@@ -0,0 +1,46 @@
++/**
++ * Copyright 2022 Huawei Technologies Co., Ltd
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "src/runtime/kernel/cpu/base/custom_base.h"
++#include <algorithm>
++#include <utility>
++#include <vector>
++#include "src/runtime/kernel_registry.h"
++#include "nnacl/op_base.h"
++
++using mindspore::kernel::KERNEL_ARCH;
++using mindspore::lite::KernelRegistrar;
++using mindspore::lite::RET_ERROR;
++using mindspore::lite::RET_OK;
++using mindspore::schema::PrimitiveType_Custom;
++
++namespace mindspore::kernel {
++int CustomBaseCPUKernel::Prepare() {
++  return RET_OK;
++}
++
++int CustomBaseCPUKernel::ReSize() {
++  return RET_OK;
++}
++
++int CustomBaseCPUKernel::Run() {
++  return RET_OK;
++}
++
++REG_KERNEL(kCPU, kNumberTypeInt32, PrimType_Inner_ThirdPartyModel, LiteKernelCreator<CustomBaseCPUKernel>)
++REG_KERNEL(kCPU, kNumberTypeFloat32, PrimType_Inner_ThirdPartyModel, LiteKernelCreator<CustomBaseCPUKernel>)
++REG_KERNEL(kCPU, kNumberTypeBool, PrimType_Inner_ThirdPartyModel, LiteKernelCreator<CustomBaseCPUKernel>)
++}  // namespace mindspore::kernel
+diff --git a/mindspore/lite/src/runtime/kernel/cpu/base/custom_base.h b/mindspore/lite/src/runtime/kernel/cpu/base/custom_base.h
+new file mode 100644
+index 00000000..3b021669
+--- /dev/null
++++ b/mindspore/lite/src/runtime/kernel/cpu/base/custom_base.h
+@@ -0,0 +1,43 @@
++/**
++ * Copyright 2022 Huawei Technologies Co., Ltd
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef MINDSPORE_LITE_SRC_RUNTIME_KERNEL_CPU_BASE_CUSTOM_BASE_H_
++#define MINDSPORE_LITE_SRC_RUNTIME_KERNEL_CPU_BASE_CUSTOM_BASE_H_
++
++#include <vector>
++#include "src/runtime/lite_kernel.h"
++#include "nnacl/custom_parameter.h"
++
++namespace mindspore::kernel {
++class CustomBaseCPUKernel : public LiteKernel {
++ public:
++  CustomBaseCPUKernel(OpParameter *parameter, const std::vector<lite::Tensor *> &inputs,
++                      const std::vector<lite::Tensor *> &outputs, const lite::InnerContext *ctx)
++      : LiteKernel(parameter, inputs, outputs, ctx) {
++    custom_param_ = reinterpret_cast<CustomParameter *>(op_parameter_);
++  }
++  ~CustomBaseCPUKernel() override = default;
++
++  int Prepare() override;
++  int ReSize() override;
++  int Run() override;
++
++ private:
++  CustomParameter *custom_param_ = nullptr;
++};
++}  // namespace mindspore::kernel
++
++#endif  // MINDSPORE_LITE_SRC_RUNTIME_KERNEL_CPU_BASE_CUSTOM_BASE_H_
+diff --git a/mindspore/lite/src/runtime/lite_session.cc b/mindspore/lite/src/runtime/lite_session.cc
+index 4a9939fd..eb83f444 100644
+--- a/mindspore/lite/src/runtime/lite_session.cc
++++ b/mindspore/lite/src/runtime/lite_session.cc
+@@ -54,6 +54,9 @@
+ #endif
+ #include "src/runtime/runtime_convert.h"
+ #include "extendrt/mindir_loader/model_loader.h"
++#ifdef SUPPORT_NNRT
++#include "src/runtime/delegate/nnrt/nnrt_delegate.h"
++#endif
+ 
+ using AbstractBaseModel = mindspore::infer::AbstractBaseModel;
+ 
+@@ -829,6 +832,19 @@ int LiteSession::CreateNPUDelegate() {
+   return RET_OK;
+ }
+ 
++int LiteSession::CreateNNRTDelegate() {
++#if SUPPORT_NNRT
++  delegate_ = std::make_shared<NNRTDelegate>();
++  if (delegate_ == nullptr) {
++    MS_LOG(ERROR) << "New NNRT delegate failed";
++    return RET_ERROR;
++  }
++  delegate_device_type_ = DT_NNRT;
++  this->context_->delegate = delegate_;
++#endif
++  return RET_OK;
++};
++
+ int LiteSession::DelegateInit() {
+ #ifndef DELEGATE_CLIP
+   if (context_->delegate != nullptr) {
+@@ -848,6 +864,12 @@ int LiteSession::DelegateInit() {
+         return ret;
+       }
+     }
++    if (context_->IsDeviceTypeEnabled(DT_NNRT)) {
++      auto ret = CreateNNRTDelegate();
++      if (ret != RET_OK) {
++        return ret;
++      }
++    }
+   }
+ 
+   if (delegate_ != nullptr) {
+diff --git a/mindspore/lite/src/runtime/lite_session.h b/mindspore/lite/src/runtime/lite_session.h
+index dc93d583..255e90b5 100644
+--- a/mindspore/lite/src/runtime/lite_session.h
++++ b/mindspore/lite/src/runtime/lite_session.h
+@@ -150,6 +150,7 @@ class LiteSession {
+   int ContextInit(InnerContext *context);
+   int CreateTensorRTDelegate();
+   int CreateNPUDelegate();
++  int CreateNNRTDelegate();
+   int DelegateInit();
+   int InitGPURuntime();
+ 
+diff --git a/mindspore/lite/src/runtime/scheduler.cc b/mindspore/lite/src/runtime/scheduler.cc
+index 4a024850..b2b6f6a9 100644
+--- a/mindspore/lite/src/runtime/scheduler.cc
++++ b/mindspore/lite/src/runtime/scheduler.cc
+@@ -53,7 +53,9 @@
+ #include "include/registry/register_kernel_interface.h"
+ #include "extendrt/mindir_loader/abstract_base_model.h"
+ #include "src/runtime/pack_weight_manager.h"
+-
++#ifdef SUPPORT_NNRT
++#include "src/runtime/delegate/nnrt/nnrt_delegate.h"
++#endif
+ using AbstractBaseModel = mindspore::infer::AbstractBaseModel;
+ 
+ namespace mindspore::lite {
+@@ -423,6 +425,7 @@ bool Scheduler::CheckRunNCXPass() {
+ }
+ 
+ int Scheduler::Schedule(std::vector<kernel::KernelExec *> *dst_kernels) {
++  MS_LOG(DEBUG) << "Start schedule.";
+   int check_input_ret = CheckInputParam(dst_kernels);
+   if (check_input_ret != RET_OK) {
+     MS_LOG(ERROR) << "CheckInputParam failed! ret: " << check_input_ret;
+@@ -459,11 +462,13 @@ int Scheduler::Schedule(std::vector<kernel::KernelExec *> *dst_kernels) {
+   }
+   shape_fusion_pass_->FreeOutputTensorDataOfFusedShape();
+ 
++  MS_LOG(DEBUG) << "Start to init delegate kernels.";
+   ret = InitDelegateKernels(dst_kernels);
+   if (ret != RET_OK) {
+     MS_LOG(ERROR) << "Repalce delegate kernels failed.";
+     return ret;
+   }
++  MS_LOG(DEBUG) << "Finish to init delegate kernels.";
+ 
+   ret = CheckCpuValid(dst_kernels);
+   if (ret != RET_OK) {
+@@ -555,6 +560,14 @@ int Scheduler::ReplaceDelegateKernels(std::vector<kernel::KernelExec *> *dst_ker
+     MS_LOG(ERROR) << "New delegate model failed.";
+     return RET_NULL_PTR;
+   }
++
++#ifdef SUPPORT_NNRT
++  if (context_->IsDeviceTypeEnabled(DT_NNRT)) {
++    auto delegate = static_cast<NNRTDelegate *>(delegate_.get());
++    delegate->ShallowCopyLiteGraph(this->src_model_->graph_);
++  }
++#endif
++
+   auto ret = delegate_->Build(model);
+   if (ret != mindspore::kSuccess) {
+     delete model;
+diff --git a/mindspore/lite/tools/benchmark/benchmark_base.cc b/mindspore/lite/tools/benchmark/benchmark_base.cc
+index 1c161fc4..b9d83296 100644
+--- a/mindspore/lite/tools/benchmark/benchmark_base.cc
++++ b/mindspore/lite/tools/benchmark/benchmark_base.cc
+@@ -304,7 +304,7 @@ int BenchmarkBase::CheckThreadNumValid() {
+ 
+ int BenchmarkBase::CheckDeviceTypeValid() {
+   if (flags_->device_ != "CPU" && flags_->device_ != "GPU" && flags_->device_ != "NPU" &&
+-      flags_->device_ != "Ascend310" && flags_->device_ != "Ascend310P") {
++      flags_->device_ != "Ascend310" && flags_->device_ != "Ascend310P" && flags_->device_ != "NNRT") {
+     MS_LOG(ERROR) << "Device type:" << flags_->device_ << " is not supported.";
+     std::cerr << "Device type:" << flags_->device_ << " is not supported." << std::endl;
+     return RET_ERROR;
+diff --git a/mindspore/lite/tools/benchmark/benchmark_base.h b/mindspore/lite/tools/benchmark/benchmark_base.h
+index d7f523e8..e24e1fe9 100644
+--- a/mindspore/lite/tools/benchmark/benchmark_base.h
++++ b/mindspore/lite/tools/benchmark/benchmark_base.h
+@@ -121,7 +121,7 @@ class MS_API BenchmarkFlags : public virtual FlagParser {
+     AddFlag(&BenchmarkFlags::model_type_, "modelType", "Input model type. MindIR | MindIR_Lite", "MindIR");
+     AddFlag(&BenchmarkFlags::in_data_file_, "inDataFile", "Input data file, if not set, use random input", "");
+     AddFlag(&BenchmarkFlags::config_file_, "configFile", "Config file", "");
+-    AddFlag(&BenchmarkFlags::device_, "device", "CPU | GPU | NPU | Ascend310 | Ascend310P", "CPU");
++    AddFlag(&BenchmarkFlags::device_, "device", "CPU | GPU | NPU | Ascend310 | Ascend310P | NNRT", "CPU");
+     AddFlag(&BenchmarkFlags::cpu_bind_mode_, "cpuBindMode", "Input 0 for NO_BIND, 1 for HIGHER_CPU, 2 for MID_CPU.", 1);
+     // MarkPerformance
+     AddFlag(&BenchmarkFlags::loop_count_, "loopCount", "Run loop count", 10);
+diff --git a/mindspore/lite/tools/benchmark/benchmark_c_api.cc b/mindspore/lite/tools/benchmark/benchmark_c_api.cc
+index 252e65c6..cb0c56b0 100644
+--- a/mindspore/lite/tools/benchmark/benchmark_c_api.cc
++++ b/mindspore/lite/tools/benchmark/benchmark_c_api.cc
+@@ -125,6 +125,10 @@ int BenchmarkCApi::InitContext() {
+     OH_AI_DeviceInfoSetFrequency(npu_device_info, kFrequencyDefault);
+     OH_AI_ContextAddDeviceInfo(context_, npu_device_info);
+   }
++  if (flags_->device_ == "NNRT") {
++    OH_AI_DeviceInfoHandle nnrt_device_info = OH_AI_DeviceInfoCreate(OH_AI_DEVICETYPE_NNRT);
++    OH_AI_ContextAddDeviceInfo(context_, nnrt_device_info);
++  }
+   OH_AI_DeviceInfoHandle cpu_device_info = OH_AI_DeviceInfoCreate(OH_AI_DEVICETYPE_CPU);
+   OH_AI_DeviceInfoSetEnableFP16(cpu_device_info, flags_->enable_fp16_);
+   OH_AI_ContextAddDeviceInfo(context_, cpu_device_info);
+diff --git a/mindspore/lite/tools/benchmark/benchmark_unified_api.cc b/mindspore/lite/tools/benchmark/benchmark_unified_api.cc
+index 91f1fa73..75dc7b01 100644
+--- a/mindspore/lite/tools/benchmark/benchmark_unified_api.cc
++++ b/mindspore/lite/tools/benchmark/benchmark_unified_api.cc
+@@ -444,6 +444,11 @@ int BenchmarkUnifiedApi::InitMSContext(const std::shared_ptr<mindspore::Context>
+     // device_list.push_back(ascend_device_info);
+   }
+ 
++  if (flags_->device_ == "NNRT") {
++    std::shared_ptr<NNRTDeviceInfo> nnrt_device_info = std::make_shared<NNRTDeviceInfo>();
++    device_list.push_back(nnrt_device_info);
++  }
++
+   // CPU priority is behind GPU and NPU
+   std::shared_ptr<CPUDeviceInfo> device_info = std::make_shared<CPUDeviceInfo>();
+   device_info->SetEnableFP16(flags_->enable_fp16_);
+-- 
+2.34.1
+

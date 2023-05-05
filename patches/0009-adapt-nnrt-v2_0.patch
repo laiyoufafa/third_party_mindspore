@@ -1,0 +1,1669 @@
+diff --git a/mindspore/lite/mindir/BUILD.gn b/mindspore/lite/mindir/BUILD.gn
+index 2ef8225d..7bb190ae 100644
+--- a/mindspore/lite/mindir/BUILD.gn
++++ b/mindspore/lite/mindir/BUILD.gn
+@@ -33,12 +33,14 @@ ohos_shared_library("mindir_lib") {
+     "src/mindir_memory_manager.cc",
+     "src/mindir_nnrt_lite_graph.cc",
+     "src/mindir_nnrt_lite_graph_to_model.cc",
++    "src/mindir_nnrt_lite_graph_to_model_v2_0.cc",
+     "src/mindir_tensor.cc",
+     "src/utils.cc",
+   ]
+   external_deps = [
+     "c_utils:utils",
+     "drivers_interface_nnrt:libnnrt_proxy_1.0",
++    "drivers_interface_nnrt:libnnrt_proxy_2.0",
+     "hdf_core:libhdi",
+     "hilog_native:libhilog",
+     "ipc:ipc_core",
+diff --git a/mindspore/lite/mindir/include/mindir.h b/mindspore/lite/mindir/include/mindir.h
+index ae72cc9b..b73920ff 100644
+--- a/mindspore/lite/mindir/include/mindir.h
++++ b/mindspore/lite/mindir/include/mindir.h
+@@ -29,6 +29,16 @@ struct Model;
+ }  // namespace HDI
+ }  // namespace OHOS
+ 
++namespace OHOS {
++namespace HDI {
++namespace Nnrt {
++namespace V2_0 {
++struct Model;
++}  // namespace V2_0
++}  // namespace Nnrt
++}  // namespace HDI
++}  // namespace OHOS
++
+ namespace mindspore {
+ namespace schema {
+ struct Attribute;
+@@ -41,6 +51,10 @@ OHOS::HDI::Nnrt::V1_0::Model *MindIR_LiteGraph_To_Model(const LiteGraph *lite_gr
+                                                         const OHOS::HDI::Nnrt::V1_0::SharedBuffer &buffer);
+ void MindIR_Model_Destroy(OHOS::HDI::Nnrt::V1_0::Model **model);
+ 
++OHOS::HDI::Nnrt::V2_0::Model *MindIR_LiteGraph_To_Model(const LiteGraph *lite_graph,
++                                                        const OHOS::HDI::Nnrt::V2_0::SharedBuffer &buffer);
++void MindIR_Model_Destroy(OHOS::HDI::Nnrt::V2_0::Model **model);
++
+ // ********** Activation **********
+ PrimitivePtr MindIR_Activation_CreatePrimitive(ActivationType activation_type, float alpha, float min_val,
+                                                float max_val, bool approximate);
+diff --git a/mindspore/lite/mindir/include/mindir_tensor.h b/mindspore/lite/mindir/include/mindir_tensor.h
+index ce1b24dc..836bc8af 100644
+--- a/mindspore/lite/mindir/include/mindir_tensor.h
++++ b/mindspore/lite/mindir/include/mindir_tensor.h
+@@ -13,6 +13,16 @@ struct SharedBuffer;
+ }  // namespace HDI
+ }  // namespace OHOS
+ 
++namespace OHOS {
++namespace HDI {
++namespace Nnrt {
++namespace V2_0 {
++struct SharedBuffer;
++}  // namespace V2_0
++}  // namespace Nnrt
++}  // namespace HDI
++}  // namespace OHOS
++
+ namespace mindspore {
+ namespace lite {
+ 
+@@ -29,9 +39,15 @@ std::vector<int32_t> MindIR_Tensor_GetDims(ConstTensorPtr tensor);
+ void MindIR_Tensor_SetDims(TensorPtr *tensor, const std::vector<int32_t> &dims);
+ Format MindIR_Tensor_GetFormat(ConstTensorPtr tensor);
+ void MindIR_Tensor_SetFormat(TensorPtr *tensor, Format format);
++
+ OHOS::HDI::Nnrt::V1_0::SharedBuffer MindIR_Tensor_GetData(ConstTensorPtr tensor,
+-                                                          const OHOS::HDI::Nnrt::V1_0::SharedBuffer &buffer,
++                                                          const OHOS::HDI::Nnrt::V1_0::SharedBuffer &buffer_templete,
+                                                           uint8_t *mmap_ptr, unsigned int offset);
++
++OHOS::HDI::Nnrt::V2_0::SharedBuffer MindIR_Tensor_GetData_V2_0(ConstTensorPtr tensor,
++                                                          const OHOS::HDI::Nnrt::V2_0::SharedBuffer &buffer_templete,
++                                                          uint8_t *mmap_ptr, unsigned int offset);
++
+ void MindIR_Tensor_SetData(TensorPtr *tensor, const std::vector<uint8_t> &data);
+ std::vector<uint8_t> MindIR_Tensor_GetData(ConstTensorPtr tensor);
+ std::vector<QuantParam> MindIR_Tensor_GetQuantParams(ConstTensorPtr tensor);
+diff --git a/mindspore/lite/mindir/src/mindir_nnrt_lite_graph_to_model.cc b/mindspore/lite/mindir/src/mindir_nnrt_lite_graph_to_model.cc
+index dd9202e2..df39e04b 100644
+--- a/mindspore/lite/mindir/src/mindir_nnrt_lite_graph_to_model.cc
++++ b/mindspore/lite/mindir/src/mindir_nnrt_lite_graph_to_model.cc
+@@ -72,7 +72,7 @@ void MindIR_Model_Destroy(OHOS::HDI::Nnrt::V1_0::Model **model) {
+   }
+ }
+ 
+-OHOS::HDI::Nnrt::V1_0::Model *MindIR_LiteGraph_To_Model(const LiteGraph *lite_graph, const SharedBuffer &buffer) {
++OHOS::HDI::Nnrt::V1_0::Model *MindIR_LiteGraph_To_Model(const LiteGraph *lite_graph, const OHOS::HDI::Nnrt::V1_0::SharedBuffer &buffer) {
+   if (lite_graph != nullptr) {
+     MS_LOG(INFO) << "MindIR_LiteGraph_To_Model begin";
+     if (!lite_graph->name_.empty()) {
+diff --git a/mindspore/lite/mindir/src/mindir_nnrt_lite_graph_to_model_v2_0.cc b/mindspore/lite/mindir/src/mindir_nnrt_lite_graph_to_model_v2_0.cc
+new file mode 100644
+index 00000000..11012492
+--- /dev/null
++++ b/mindspore/lite/mindir/src/mindir_nnrt_lite_graph_to_model_v2_0.cc
+@@ -0,0 +1,1496 @@
++/**
++ * Copyright 2021 Huawei Technologies Co., Ltd
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include "mindir.h"
++#include <vector>
++#include <algorithm>
++#include <sys/mman.h>
++#include "src/common/log.h"
++#include "lite_graph.h"
++#include "schema/model_generated.h"
++#include "mindir_types.h"
++#include "message_parcel.h"
++#include "nnrt/v2_0/nnrt_types.h"
++#include "nnrt/v2_0/node_attr_types.h"
++#include "nnrt/v2_0/model_types.h"
++
++using namespace OHOS::HDI::Nnrt::V2_0;
++namespace mindspore {
++namespace lite {
++
++constexpr size_t kNumTwo = 2;
++constexpr size_t kNumFour = 4;
++constexpr size_t kNumEight = 8;
++
++inline std::vector<OHOS::HDI::Nnrt::V2_0::QuantParam> MindIR_Tensor_GetQuantParams_OHOS_V2_0(TensorPtr tensor) {
++  if (tensor != nullptr) {
++    auto value = static_cast<schema::Tensor *>(tensor);
++
++    if (value != nullptr) {
++      std::vector<OHOS::HDI::Nnrt::V2_0::QuantParam> result;
++      auto src = value->quantParams();
++      if (src == nullptr) {
++        return {};
++      }
++      size_t size = src->size();
++      result.reserve(src->size());
++      for (size_t i = 0; i < size; i++) {
++        auto tmp = src->Get(i);
++        OHOS::HDI::Nnrt::V2_0::QuantParam quantParam{tmp->numBits(), tmp->zeroPoint(), tmp->scale()};
++        result.emplace_back(quantParam);
++      }
++      return result;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++
++void MindIR_Model_Destroy(OHOS::HDI::Nnrt::V2_0::Model **model) {
++  if (model != nullptr) {
++    auto model_data = *model;
++    if (model_data != nullptr) {
++      delete (model_data);
++      *model = nullptr;
++    } else {
++      MS_LOG(ERROR) << "*model is nullptr, desrtoy model fail.";
++    }
++  }
++}
++
++std::vector<int8_t> ConvertActivation_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Activation();
++    if (value != nullptr) {
++      Activation activation{};
++      activation.activationType =
++        static_cast<HDI::Nnrt::V2_0::HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      activation.alpha = value->alpha();
++      activation.minVal = value->min_val();
++      activation.maxVal = value->max_val();
++      activation.approximate = value->approximate();
++      OHOS::MessageParcel data;
++      (void)ActivationBlockMarshalling(data, activation);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertAddFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_AddFusion();
++    if (value != nullptr) {
++      AddFusion add_fusion{};
++      add_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)AddFusionBlockMarshalling(data, add_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertArgMaxFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_ArgMaxFusion();
++    if (value != nullptr) {
++      ArgMaxFusion arg_max_fusion{};
++      arg_max_fusion.axis = value->axis();
++      arg_max_fusion.topK = value->top_k();
++      arg_max_fusion.keepDims = value->keep_dims();
++      arg_max_fusion.outMaxValue = value->out_max_value();
++      OHOS::MessageParcel data;
++      (void)ArgMaxFusionBlockMarshalling(data, arg_max_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertAvgPoolFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_AvgPoolFusion();
++    if (value != nullptr) {
++      AvgPoolFusion avg_pool_fusion{};
++      std::vector<int64_t> kernel_size;
++      kernel_size.reserve(kNumTwo);
++      if (value->kernel_size() == nullptr || value->kernel_size()->size() < kNumTwo) {
++        kernel_size = {};
++      } else {
++        kernel_size = std::vector<int64_t>(value->kernel_size()->begin(), value->kernel_size()->end());
++      }
++      std::vector<int64_t> strides;
++      strides.reserve(kNumTwo);
++      if (value->strides() == nullptr || value->strides()->size() < kNumTwo) {
++        strides = {};
++      } else {
++        strides = std::vector<int64_t>(value->strides()->begin(), value->strides()->end());
++      }
++      std::vector<int64_t> padList;
++      strides.reserve(kNumTwo);
++      if (value->pad() == nullptr || value->pad()->size() < kNumFour) {
++        padList = {};
++      } else {
++        padList = std::vector<int64_t>(value->pad()->begin(), value->pad()->end());
++      }
++      avg_pool_fusion.kernelSize = kernel_size;
++      avg_pool_fusion.strides = strides;
++      avg_pool_fusion.pad = padList;
++      avg_pool_fusion.padMode = static_cast<HDI::Nnrt::V2_0::PadMode>(value->pad_mode());
++      avg_pool_fusion.roundMode = static_cast<HDI::Nnrt::V2_0::RoundMode>(value->round_mode());
++      avg_pool_fusion.format = static_cast<HDI::Nnrt::V2_0::Format>(value->format());
++      avg_pool_fusion.global = value->global();
++      avg_pool_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)AvgPoolFusionBlockMarshalling(data, avg_pool_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertBatchToSpaceND_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_BatchToSpaceND();
++    if (value != nullptr) {
++      BatchToSpaceND batch_to_space_n_d{};
++      std::vector<int64_t> blockShape;
++      blockShape.reserve(kNumTwo);
++      if (value->block_shape() == nullptr || value->block_shape()->size() < kNumTwo) {
++        blockShape = {0, 0};
++      } else {
++        blockShape = std::vector<int64_t>(value->block_shape()->begin(), value->block_shape()->end());
++      }
++      batch_to_space_n_d.blockShape = blockShape;
++      auto crops = value->crops();
++      std::vector<std::vector<int64_t>> crops_vec2d;
++      if (crops->data() == nullptr) {
++        MS_LOG(ERROR) << "crops_data is nullptr";
++        crops_vec2d = {{}};
++      } else {
++        crops_vec2d.reserve(crops->data()->size());
++        for (size_t i = 0; i < crops->data()->size(); i++) {
++          auto vet = crops->data()->Get(i);
++          crops_vec2d.emplace_back(std::vector<int64_t>(vet->data()->begin(), vet->data()->end()));
++        }
++      }
++      batch_to_space_n_d.crops = crops_vec2d;
++      OHOS::MessageParcel data;
++      (void)BatchToSpaceNDBlockMarshalling(data, batch_to_space_n_d);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertBiasAdd_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_BiasAdd();
++    if (value != nullptr) {
++      BiasAdd bias_add{};
++      OHOS::MessageParcel data;
++      (void)BiasAddBlockMarshalling(data, bias_add);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertCast_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Cast();
++    if (value != nullptr) {
++      Cast cast{};
++      OHOS::MessageParcel data;
++      (void)CastBlockMarshalling(data, cast);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertConcat_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Concat();
++    if (value != nullptr) {
++      Concat concat{};
++      concat.axis = value->axis();
++      OHOS::MessageParcel data;
++      (void)ConcatBlockMarshalling(data, concat);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertConv2DFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Conv2DFusion();
++    if (value != nullptr) {
++      Conv2DFusion conv2_d_fusion{};
++      std::vector<int64_t> kernel_size;
++      kernel_size.reserve(kNumTwo);
++      if (value->kernel_size() == nullptr || value->kernel_size()->size() < kNumTwo) {
++        kernel_size = {};
++      } else {
++        kernel_size = std::vector<int64_t>(value->kernel_size()->begin(), value->kernel_size()->end());
++      }
++      std::vector<int64_t> strides;
++      strides.reserve(kNumTwo);
++      if (value->stride() == nullptr || value->stride()->size() < kNumTwo) {
++        strides = {};
++      } else {
++        strides = std::vector<int64_t>(value->stride()->begin(), value->stride()->end());
++      }
++      std::vector<int64_t> dilation;
++      dilation.reserve(kNumTwo);
++      if (value->dilation() == nullptr || value->dilation()->size() < kNumTwo) {
++        dilation = {};
++      } else {
++        dilation = std::vector<int64_t>(value->dilation()->begin(), value->dilation()->end());
++      }
++      std::vector<int64_t> padList;
++      strides.reserve(kNumTwo);
++      if (value->pad_list() == nullptr || value->pad_list()->size() < kNumFour) {
++        padList = {};
++      } else {
++        padList = std::vector<int64_t>(value->pad_list()->begin(), value->pad_list()->end());
++      }
++      conv2_d_fusion.kernelSize = kernel_size;
++      conv2_d_fusion.stride = strides;
++      conv2_d_fusion.dilation = dilation;
++      conv2_d_fusion.padMode = static_cast<HDI::Nnrt::V2_0::PadMode>(value->pad_mode());
++      conv2_d_fusion.padList = padList;
++      conv2_d_fusion.group = value->group();
++      conv2_d_fusion.inChannel = value->in_channel();
++      conv2_d_fusion.outChannel = value->out_channel();
++      conv2_d_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)Conv2DFusionBlockMarshalling(data, conv2_d_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertConv2dTransposeFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Conv2dTransposeFusion();
++    if (value != nullptr) {
++      Conv2dTransposeFusion conv2d_transpose_fusion{};
++      std::vector<int64_t> kernel_size;
++      kernel_size.reserve(kNumTwo);
++      if (value->kernel_size() == nullptr || value->kernel_size()->size() < kNumTwo) {
++        kernel_size = {};
++      } else {
++        kernel_size = std::vector<int64_t>(value->kernel_size()->begin(), value->kernel_size()->end());
++      }
++      std::vector<int64_t> strides;
++      strides.reserve(kNumTwo);
++      if (value->stride() == nullptr || value->stride()->size() < kNumTwo) {
++        strides = {};
++      } else {
++        strides = std::vector<int64_t>(value->stride()->begin(), value->stride()->end());
++      }
++      std::vector<int64_t> dilation;
++      dilation.reserve(kNumTwo);
++      if (value->dilation() == nullptr || value->dilation()->size() < kNumTwo) {
++        dilation = {};
++      } else {
++        dilation = std::vector<int64_t>(value->dilation()->begin(), value->dilation()->end());
++      }
++      std::vector<int64_t> padList;
++      strides.reserve(kNumTwo);
++      if (value->pad_list() == nullptr || value->pad_list()->size() < kNumFour) {
++        padList = {};
++      } else {
++        padList = std::vector<int64_t>(value->pad_list()->begin(), value->pad_list()->end());
++      }
++      std::vector<int64_t> output_paddings;
++      output_paddings.reserve(kNumTwo);
++      if (value->output_paddings() == nullptr || value->output_paddings()->size() < kNumTwo) {
++        output_paddings = {};
++      } else {
++        output_paddings = std::vector<int64_t>(value->output_paddings()->begin(), value->output_paddings()->end());
++      }
++      conv2d_transpose_fusion.kernelSize = kernel_size;
++      conv2d_transpose_fusion.stride = strides;
++      conv2d_transpose_fusion.dilation = dilation;
++      conv2d_transpose_fusion.padMode = static_cast<HDI::Nnrt::V2_0::PadMode>(value->pad_mode());
++      conv2d_transpose_fusion.padList = padList;
++      conv2d_transpose_fusion.group = value->group();
++      conv2d_transpose_fusion.inChannel = value->in_channel();
++      conv2d_transpose_fusion.outChannel = value->out_channel();
++      conv2d_transpose_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      conv2d_transpose_fusion.outputPaddings = output_paddings;
++      OHOS::MessageParcel data;
++      (void)Conv2dTransposeFusionBlockMarshalling(data, conv2d_transpose_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertDivFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_DivFusion();
++    if (value != nullptr) {
++      DivFusion div_fusion{};
++      div_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)DivFusionBlockMarshalling(data, div_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertEltwise_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Eltwise();
++    if (value != nullptr) {
++      Eltwise eltwise{};
++      eltwise.mode = static_cast<HDI::Nnrt::V2_0::EltwiseMode>(value->mode());
++      OHOS::MessageParcel data;
++      (void)EltwiseBlockMarshalling(data, eltwise);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertExpandDims_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_ExpandDims();
++    if (value != nullptr) {
++      ExpandDims expand_dims{};
++      OHOS::MessageParcel data;
++      (void)ExpandDimsBlockMarshalling(data, expand_dims);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertFill_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Fill();
++    if (value != nullptr) {
++      Fill fill{};
++      OHOS::MessageParcel data;
++      (void)FillBlockMarshalling(data, fill);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertFullConnection_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_FullConnection();
++    if (value != nullptr) {
++      FullConnection full_connection{};
++      full_connection.hasBias = value->has_bias();
++      full_connection.useAxis = value->use_axis();
++      full_connection.axis = value->axis();
++      full_connection.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)FullConnectionBlockMarshalling(data, full_connection);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertFusedBatchNorm_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_FusedBatchNorm();
++    if (value != nullptr) {
++      FusedBatchNorm fused_batch_norm{};
++      fused_batch_norm.epsilon = value->epsilon();
++      OHOS::MessageParcel data;
++      (void)FusedBatchNormBlockMarshalling(data, fused_batch_norm);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertGather_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Gather();
++    if (value != nullptr) {
++      Gather gather{};
++      OHOS::MessageParcel data;
++      (void)GatherBlockMarshalling(data, gather);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertLayerNormFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_LayerNormFusion();
++    if (value != nullptr) {
++      LayerNormFusion layer_norm_fusion{};
++      layer_norm_fusion.beginNormAxis = value->begin_norm_axis();
++      layer_norm_fusion.epsilon = value->epsilon();
++      layer_norm_fusion.elementwiseAffine = value->elementwise_affine();
++      layer_norm_fusion.beginParamsAxis = value->begin_params_axis();
++      OHOS::MessageParcel data;
++      (void)LayerNormFusionBlockMarshalling(data, layer_norm_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertLessEqual_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_LessEqual();
++    if (value != nullptr) {
++      LessEqual less_equal{};
++      OHOS::MessageParcel data;
++      (void)LessEqualBlockMarshalling(data, less_equal);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertMatMulFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_MatMulFusion();
++    if (value != nullptr) {
++      MatMulFusion mat_mul_fusion{};
++      mat_mul_fusion.transposeA = value->transpose_a();
++      mat_mul_fusion.transposeB = value->transpose_b();
++      mat_mul_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)MatMulFusionBlockMarshalling(data, mat_mul_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertMaximum_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Maximum();
++    if (value != nullptr) {
++      Maximum maximum{};
++      OHOS::MessageParcel data;
++      (void)MaximumBlockMarshalling(data, maximum);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertMaxPoolFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_MaxPoolFusion();
++    if (value != nullptr) {
++      MaxPoolFusion max_pool_fusion{};
++      std::vector<int64_t> kernel_size;
++      kernel_size.reserve(kNumTwo);
++      if (value->kernel_size() == nullptr || value->kernel_size()->size() < kNumTwo) {
++        kernel_size = {};
++      } else {
++        kernel_size = std::vector<int64_t>(value->kernel_size()->begin(), value->kernel_size()->end());
++      }
++      std::vector<int64_t> strides;
++      strides.reserve(kNumTwo);
++      if (value->strides() == nullptr || value->strides()->size() < kNumTwo) {
++        strides = {};
++      } else {
++        strides = std::vector<int64_t>(value->strides()->begin(), value->strides()->end());
++      }
++      std::vector<int64_t> padList;
++      padList.reserve(kNumFour);
++      if (value->pad() == nullptr || value->pad()->size() < kNumFour) {
++        padList = {};
++      } else {
++        padList = std::vector<int64_t>(value->pad()->begin(), value->pad()->end());
++      }
++      max_pool_fusion.kernelSize = kernel_size;
++      max_pool_fusion.strides = strides;
++      max_pool_fusion.pad = padList;
++      max_pool_fusion.padMode = static_cast<HDI::Nnrt::V2_0::PadMode>(value->pad_mode());
++      max_pool_fusion.format = static_cast<HDI::Nnrt::V2_0::Format>(value->format());
++      max_pool_fusion.global = value->global();
++      max_pool_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)MaxPoolFusionBlockMarshalling(data, max_pool_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertMulFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_MulFusion();
++    if (value != nullptr) {
++      MulFusion mul_fusion{};
++      mul_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)MulFusionBlockMarshalling(data, mul_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertOneHot_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_OneHot();
++    if (value != nullptr) {
++      OneHot one_hot{};
++      one_hot.axis = value->axis();
++      OHOS::MessageParcel data;
++      (void)OneHotBlockMarshalling(data, one_hot);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertPadFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_PadFusion();
++    if (value != nullptr) {
++      PadFusion pad_fusion{};
++      auto paddings = value->paddings();
++      std::vector<std::vector<int64_t>> paddings_vec2d;
++      if (paddings == nullptr || paddings->data()->size() < kNumTwo) {
++        paddings_vec2d = {{0}, {0}, {0}, {0}};
++      } else {
++        paddings_vec2d.reserve(paddings->data()->size());
++        for (size_t i = 0; i < paddings->data()->size(); i++) {
++          auto vet = paddings->data()->Get(i);
++          paddings_vec2d.emplace_back(std::vector<int64_t>(vet->data()->begin(), vet->data()->end()));
++        }
++      }
++      pad_fusion.paddings = paddings_vec2d;
++      pad_fusion.paddingMode = static_cast<HDI::Nnrt::V2_0::PaddingMode>(value->padding_mode());
++      pad_fusion.constantValue = value->constant_value();
++      OHOS::MessageParcel data;
++      (void)PadFusionBlockMarshalling(data, pad_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertPowFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_PowFusion();
++    if (value != nullptr) {
++      PowFusion pow_fusion{};
++      pow_fusion.scale = value->scale();
++      pow_fusion.shift = value->shift();
++      OHOS::MessageParcel data;
++      (void)PowFusionBlockMarshalling(data, pow_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertPReLUFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_PReLUFusion();
++    if (value != nullptr) {
++      PReLUFusion p_re_l_u_fusion{};
++      p_re_l_u_fusion.channelShared = value->channel_shared();
++      OHOS::MessageParcel data;
++      (void)PReLUFusionBlockMarshalling(data, p_re_l_u_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertQuantDTypeCast_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_QuantDTypeCast();
++    if (value != nullptr) {
++      QuantDTypeCast quant_d_type_cast{};
++      quant_d_type_cast.srcT = value->src_t();
++      quant_d_type_cast.dstT = value->dst_t();
++      OHOS::MessageParcel data;
++      (void)QuantDTypeCastBlockMarshalling(data, quant_d_type_cast);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertReduceFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_ReduceFusion();
++    if (value != nullptr) {
++      ReduceFusion reduce_fusion{};
++      reduce_fusion.keepDims = value->keep_dims();
++      reduce_fusion.mode = static_cast<HDI::Nnrt::V2_0::ReduceMode>(value->mode());
++      reduce_fusion.reduceToEnd = value->reduce_to_end();
++      reduce_fusion.coeff = value->coeff();
++      OHOS::MessageParcel data;
++      (void)ReduceFusionBlockMarshalling(data, reduce_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertReshape_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Reshape();
++    if (value != nullptr) {
++      Reshape reshape{};
++      OHOS::MessageParcel data;
++      (void)ReshapeBlockMarshalling(data, reshape);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++
++std::vector<int8_t> ConvertResize_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Resize();
++    if (value != nullptr) {
++      Resize resize{};
++      resize.method = static_cast<HDI::Nnrt::V2_0::ResizeMethod>(value->method());
++      resize.newHeight = value->new_height();
++      resize.newWidth = value->new_width();
++      resize.preserveAspectRatio = value->preserve_aspect_ratio();
++      resize.coordinateTransformMode =
++        static_cast<HDI::Nnrt::V2_0::CoordinateTransformMode>(value->coordinate_transform_mode());
++      resize.cubicCoeff = value->cubic_coeff();
++      resize.excludeOutside = value->exclude_outside();
++      resize.extrapolationValue = value->extrapolation_value();
++      resize.nearestMode = static_cast<HDI::Nnrt::V2_0::NearestMode>(value->nearest_mode());
++      OHOS::MessageParcel data;
++      (void)ResizeBlockMarshalling(data, resize);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertRsqrt_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Rsqrt();
++    if (value != nullptr) {
++      Rsqrt rsqrt{};
++      OHOS::MessageParcel data;
++      (void)RsqrtBlockMarshalling(data, rsqrt);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertScaleFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_ScaleFusion();
++    if (value != nullptr) {
++      ScaleFusion scale_fusion{};
++      scale_fusion.axis = value->axis();
++      scale_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)ScaleFusionBlockMarshalling(data, scale_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertShape_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Shape();
++    if (value != nullptr) {
++      Shape shape{};
++      OHOS::MessageParcel data;
++      (void)ShapeBlockMarshalling(data, shape);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertSliceFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_SliceFusion();
++    if (value != nullptr) {
++      SliceFusion slice_fusion{};
++      std::vector<int64_t> axes;
++      if (value->axes() == nullptr) {
++        axes = {1, 2, 3, 4, 5, 6, 7};
++      } else {
++        axes = std::vector<int64_t>(value->axes()->begin(), value->axes()->end());
++      }
++      slice_fusion.axes = axes;
++      OHOS::MessageParcel data;
++      (void)SliceFusionBlockMarshalling(data, slice_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertSoftmax_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Softmax();
++    if (value != nullptr) {
++      Softmax softmax{};
++      std::vector<int64_t> axis;
++      if (value->axis() == nullptr) {
++        axis = {};
++      } else {
++        axis = std::vector<int64_t>(value->axis()->begin(), value->axis()->end());
++      }
++      softmax.axis = axis;
++      OHOS::MessageParcel data;
++      (void)SoftmaxBlockMarshalling(data, softmax);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertSpaceToBatchND_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_SpaceToBatchND();
++    if (value != nullptr) {
++      SpaceToBatchND space_to_batch_n_d{};
++      std::vector<int64_t> blockShape;
++      blockShape.reserve(kNumTwo);
++      if (value->block_shape() == nullptr || value->block_shape()->size() < kNumTwo) {
++        blockShape = {0, 0};
++      } else {
++        blockShape = std::vector<int64_t>(value->block_shape()->begin(), value->block_shape()->end());
++      }
++      space_to_batch_n_d.blockShape = blockShape;
++      auto paddings = value->paddings();
++      std::vector<std::vector<int64_t>> paddings_vec2d;
++      if (paddings == nullptr || paddings->data()->size() == 0 || *(paddings->data()->begin()) == nullptr ||
++          (*(paddings->data()->begin()))->data() == nullptr) {
++        paddings_vec2d = {};
++      } else {
++        paddings_vec2d.reserve(paddings->data()->size());
++        for (size_t i = 0; i < paddings->data()->size(); i++) {
++          auto vet = paddings->data()->Get(i);
++          paddings_vec2d.emplace_back(std::vector<int64_t>(vet->data()->begin(), vet->data()->end()));
++        }
++      }
++      space_to_batch_n_d.paddings = paddings_vec2d;
++      OHOS::MessageParcel data;
++      (void)SpaceToBatchNDBlockMarshalling(data, space_to_batch_n_d);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertSplit_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Split();
++    if (value != nullptr) {
++      Split split{};
++      split.outputNum = value->output_num();
++      std::vector<int64_t> sizeSplits;
++      sizeSplits.reserve(split.outputNum);
++      if (value->size_splits() == nullptr || value->size_splits()->size() <= static_cast<uint32_t>(split.outputNum)) {
++        sizeSplits = {};
++      } else {
++        sizeSplits = std::vector<int64_t>(value->size_splits()->begin(), value->size_splits()->end());
++      }
++      split.sizeSplits = sizeSplits;
++      split.axis = value->axis();
++      OHOS::MessageParcel data;
++      (void)SplitBlockMarshalling(data, split);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertSqrt_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Sqrt();
++    if (value != nullptr) {
++      Sqrt sqrt{};
++      OHOS::MessageParcel data;
++      (void)SqrtBlockMarshalling(data, sqrt);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertSquaredDifference_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_SquaredDifference();
++    if (value != nullptr) {
++      SquaredDifference squared_difference{};
++      OHOS::MessageParcel data;
++      (void)SquaredDifferenceBlockMarshalling(data, squared_difference);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertSqueeze_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Squeeze();
++    if (value != nullptr) {
++      Squeeze squeeze{};
++      std::vector<int64_t> axis;
++      if (value->axis() == nullptr) {
++        axis = {};
++      } else {
++        axis = std::vector<int64_t>(value->axis()->begin(), value->axis()->end());
++      }
++      squeeze.axis = axis;
++      OHOS::MessageParcel data;
++      (void)SqueezeBlockMarshalling(data, squeeze);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertStack_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Stack();
++    if (value != nullptr) {
++      Stack stack{};
++      stack.axis = value->axis();
++      OHOS::MessageParcel data;
++      (void)StackBlockMarshalling(data, stack);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertStridedSlice_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_StridedSlice();
++    if (value != nullptr) {
++      StridedSlice strided_slice{};
++      strided_slice.beginMask = value->begin_mask();
++      strided_slice.endMask = value->end_mask();
++      strided_slice.ellipsisMask = value->ellipsis_mask();
++      strided_slice.newAxisMask = value->new_axis_mask();
++      strided_slice.shrinkAxisMask = value->shrink_axis_mask();
++      OHOS::MessageParcel data;
++      (void)StridedSliceBlockMarshalling(data, strided_slice);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertSubFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_SubFusion();
++    if (value != nullptr) {
++      SubFusion sub_fusion{};
++      sub_fusion.activationType = static_cast<HDI::Nnrt::V2_0::ActivationType>(value->activation_type());
++      OHOS::MessageParcel data;
++      (void)SubFusionBlockMarshalling(data, sub_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertTileFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_TileFusion();
++    if (value != nullptr) {
++      TileFusion tile_fusion{};
++      std::vector<int64_t> dims;
++      dims.reserve(kNumEight);
++      if (value->dims() == nullptr) {
++        dims = {0, 0, 0, 0, 0, 0, 0, 0};
++      } else {
++        dims = std::vector<int64_t>(value->dims()->begin(), value->dims()->end());
++      }
++      tile_fusion.dims = dims;
++      OHOS::MessageParcel data;
++      (void)TileFusionBlockMarshalling(data, tile_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertTopKFusion_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_TopKFusion();
++    if (value != nullptr) {
++      TopKFusion top_k_fusion{};
++      top_k_fusion.sorted = value->sorted();
++      top_k_fusion.axis = value->axis();
++      OHOS::MessageParcel data;
++      (void)TopKFusionBlockMarshalling(data, top_k_fusion);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertTranspose_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Transpose();
++    if (value != nullptr) {
++      Transpose transpose{};
++      OHOS::MessageParcel data;
++      (void)TransposeBlockMarshalling(data, transpose);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++std::vector<int8_t> ConvertUnsqueeze_V2_0(PrimitivePtr primitive) {
++  if (primitive != nullptr) {
++    auto prim = static_cast<schema::Primitive *>(primitive);
++    auto value = prim->value_as_Unsqueeze();
++    if (value != nullptr) {
++      Unsqueeze unsqueeze{};
++      std::vector<int64_t> axis;
++      axis.reserve(kNumEight);
++      if (value->axis() == nullptr) {
++        axis = {0, 0, 0, 0};
++      } else {
++        axis = std::vector<int64_t>(value->axis()->begin(), value->axis()->end());
++      }
++      unsqueeze.axis = axis;
++      OHOS::MessageParcel data;
++      (void)UnsqueezeBlockMarshalling(data, unsqueeze);
++      std::vector<int8_t> ret(reinterpret_cast<const int8_t *>(data.GetData()),
++                              reinterpret_cast<const int8_t *>(data.GetData()) + data.GetDataSize());
++      return ret;
++    } else {
++      return {};
++    }
++  } else {
++    return {};
++  }
++}
++
++std::vector<int8_t> Convert_V2_0(NodeType type, PrimitivePtr primitive) {
++  switch (type) {
++    case NODE_TYPE_ACTIVATION:
++      return ConvertActivation_V2_0(primitive);
++      break;
++    case NODE_TYPE_ADD_FUSION:
++      return ConvertAddFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_ARGMAX_FUSION:
++      return ConvertArgMaxFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_AVG_POOL_FUSION:
++      return ConvertAvgPoolFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_BATCH_TO_SPACE_ND:
++      return ConvertBatchToSpaceND_V2_0(primitive);
++      break;
++    case NODE_TYPE_BIAS_ADD:
++      return ConvertBiasAdd_V2_0(primitive);
++      break;
++    case NODE_TYPE_CAST:
++      return ConvertCast_V2_0(primitive);
++      break;
++    case NODE_TYPE_CONCAT:
++      return ConvertConcat_V2_0(primitive);
++      break;
++    case NODE_TYPE_CONV2D_FUSION:
++      return ConvertConv2DFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_CONV2D_TRANSPOSE_FUSION:
++      return ConvertConv2dTransposeFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_DIV_FUSION:
++      return ConvertDivFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_ELTWISE:
++      return ConvertEltwise_V2_0(primitive);
++      break;
++    case NODE_TYPE_EXPAND_DIMS:
++      return ConvertExpandDims_V2_0(primitive);
++      break;
++    case NODE_TYPE_FILL:
++      return ConvertFill_V2_0(primitive);
++      break;
++    case NODE_TYPE_FULL_CONNECTION:
++      return ConvertFullConnection_V2_0(primitive);
++      break;
++    case NODE_TYPE_FUSED_BATCH_NORM:
++      return ConvertFusedBatchNorm_V2_0(primitive);
++      break;
++    case NODE_TYPE_GATHER:
++      return ConvertGather_V2_0(primitive);
++      break;
++    case NODE_TYPE_LAYER_NORM_FUSION:
++      return ConvertLayerNormFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_LESS_EQUAL:
++      return ConvertLessEqual_V2_0(primitive);
++      break;
++    case NODE_TYPE_MATMUL_FUSION:
++      return ConvertMatMulFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_MAXIMUM:
++      return ConvertMaximum_V2_0(primitive);
++      break;
++    case NODE_TYPE_MAX_POOL_FUSION:
++      return ConvertMaxPoolFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_MUL_FUSION:
++      return ConvertMulFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_ONE_HOT:
++      return ConvertOneHot_V2_0(primitive);
++      break;
++    case NODE_TYPE_PAD_FUSION:
++      return ConvertPadFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_POW_FUSION:
++      return ConvertPowFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_PRELU_FUSION:
++      return ConvertPReLUFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_QUANT_DTYPE_CAST:
++      return ConvertQuantDTypeCast_V2_0(primitive);
++      break;
++    case NODE_TYPE_REDUCE_FUSION:
++      return ConvertReduceFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_RESHAPE:
++      return ConvertReshape_V2_0(primitive);
++      break;
++    case NODE_TYPE_RESIZE:
++      return ConvertResize_V2_0(primitive);
++      break;
++    case NODE_TYPE_RSQRT:
++      return ConvertRsqrt_V2_0(primitive);
++      break;
++    case NODE_TYPE_SCALE_FUSION:
++      return ConvertScaleFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_SHAPE:
++      return ConvertShape_V2_0(primitive);
++      break;
++    case NODE_TYPE_SLICE_FUSION:
++      return ConvertSliceFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_SOFTMAX:
++      return ConvertSoftmax_V2_0(primitive);
++      break;
++    case NODE_TYPE_SPACE_TO_BATCH_ND:
++      return ConvertSpaceToBatchND_V2_0(primitive);
++      break;
++    case NODE_TYPE_SPLIT:
++      return ConvertSplit_V2_0(primitive);
++      break;
++    case NODE_TYPE_SQRT:
++      return ConvertSqrt_V2_0(primitive);
++      break;
++    case NODE_TYPE_SQUARED_DIFFERENCE:
++      return ConvertSquaredDifference_V2_0(primitive);
++      break;
++    case NODE_TYPE_SQUEEZE:
++      return ConvertSqueeze_V2_0(primitive);
++      break;
++    case NODE_TYPE_STACK:
++      return ConvertStack_V2_0(primitive);
++      break;
++    case NODE_TYPE_STRIDED_SLICE:
++      return ConvertStridedSlice_V2_0(primitive);
++      break;
++    case NODE_TYPE_SUB_FUSION:
++      return ConvertSubFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_TILE_FUSION:
++      return ConvertTileFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_TOPK_FUSION:
++      return ConvertTopKFusion_V2_0(primitive);
++      break;
++    case NODE_TYPE_TRANSPOSE:
++      return ConvertTranspose_V2_0(primitive);
++      break;
++    case NODE_TYPE_UNSQUEEZE:
++      return ConvertUnsqueeze_V2_0(primitive);
++      break;
++    default:
++      return {};
++  }
++}
++
++OHOS::HDI::Nnrt::V2_0::Model *MindIR_LiteGraph_To_Model(const LiteGraph *lite_graph, const OHOS::HDI::Nnrt::V2_0::SharedBuffer &buffer) {
++  if (lite_graph != nullptr) {
++    MS_LOG(INFO) << "MindIR_LiteGraph_To_Model begin";
++    if (!lite_graph->name_.empty()) {
++      MS_LOG(INFO) << "Start converting lite graph,name =" << lite_graph->name_;
++    } else {
++      MS_LOG(INFO) << "Start converting lite graph, but lite graph has no name.";
++    }
++    std::vector<uint32_t> inputIndex;
++    std::vector<uint32_t> outputIndex;
++    std::vector<OHOS::HDI::Nnrt::V2_0::Node> nodes;
++    std::vector<OHOS::HDI::Nnrt::V2_0::Tensor> allTensors;
++    std::vector<OHOS::HDI::Nnrt::V2_0::SubGraph> subGraph;
++    // nodes
++    MS_LOG(INFO) << "Start converting nodes, vector size = " << lite_graph->all_nodes_.size();
++    nodes.reserve(lite_graph->all_nodes_.size());
++    for (auto node : lite_graph->all_nodes_) {
++      if (node == nullptr) {
++        MS_LOG(ERROR) << "node is nullptr, convert fail.";
++        return nullptr;
++      }
++      OHOS::HDI::Nnrt::V2_0::Node tmp;
++      tmp.name = node->name_;
++      if (node->primitive_ == nullptr) {
++        MS_LOG(ERROR) << "node primitive is nullptr, convert fail.";
++        return nullptr;
++      }
++      auto prim = static_cast<schema::Primitive *>(node->primitive_);
++      auto value = prim->value_type();
++      tmp.nodeType = static_cast<HDI::Nnrt::V2_0::NodeType>(value);
++      tmp.nodeAttr = Convert_V2_0(static_cast<NodeType>(value), node->primitive_);
++      tmp.inputIndex = node->input_indices_;
++      tmp.outputIndex = node->output_indices_;
++      tmp.quantType = static_cast<HDI::Nnrt::V2_0::QuantType>(node->quant_type_);
++      nodes.emplace_back(tmp);
++    }
++
++    MS_LOG(INFO) << "Start converting Tensor,Tensor size=" << lite_graph->all_tensors_.size();
++    // Tensor
++    allTensors.reserve(lite_graph->all_tensors_.size());
++    unsigned int tensor_buffer_offset = 0;
++    uint8_t *mmap_ptr = nullptr;
++    if (buffer.fd != -1) {
++      mmap_ptr =
++        static_cast<uint8_t *>(mmap(nullptr, buffer.bufferSize, PROT_READ | PROT_WRITE, MAP_SHARED, buffer.fd, 0));
++      if (mmap_ptr == MAP_FAILED) {
++        MS_LOG(ERROR) << "mmap failed";
++        return nullptr;
++      }
++    }
++    MS_LOG(INFO) << "Start parsing tensor, mmap buffer size = " << buffer.bufferSize;
++    for (auto tensor : lite_graph->all_tensors_) {
++      OHOS::HDI::Nnrt::V2_0::Tensor tmp;
++      tmp.name = MindIR_Tensor_GetName(tensor);
++      tmp.dataType = static_cast<HDI::Nnrt::V2_0::HDI::Nnrt::V2_0::DataType>(MindIR_Tensor_GetDataType(tensor));
++      tmp.dims = MindIR_Tensor_GetDims(tensor);
++      tmp.format = static_cast<HDI::Nnrt::V2_0::HDI::Nnrt::V2_0::Format>(MindIR_Tensor_GetFormat(tensor));
++      tmp.data = MindIR_Tensor_GetData_V2_0(tensor, buffer, mmap_ptr, tensor_buffer_offset);
++      tmp.quantParams = MindIR_Tensor_GetQuantParams_OHOS_V2_0(tensor);
++      allTensors.emplace_back(tmp);
++      tensor_buffer_offset = tmp.data.offset + tmp.data.dataSize;
++    }
++    MS_LOG(INFO) << ("Parsing tensor finish.");
++    if (buffer.fd != -1) {
++      auto munmap_res = munmap(mmap_ptr, buffer.bufferSize);
++      if (munmap_res != 0) {
++        MS_LOG(ERROR) << "unmap failed.";
++        return nullptr;
++      }
++    }
++
++    MS_LOG(INFO) << "Start converting SubGraph,SubGraph size=" << lite_graph->sub_graphs_.size();
++    // SubGraph
++    subGraph.reserve(lite_graph->sub_graphs_.size());
++    for (auto graph : lite_graph->sub_graphs_) {
++      OHOS::HDI::Nnrt::V2_0::SubGraph tmp;
++      tmp.name = graph->name_;
++      tmp.inputIndices = std::vector<uint32_t>(graph->input_indices_);
++      tmp.outputIndices = std::vector<uint32_t>(graph->output_indices_);
++      tmp.nodeIndices = std::vector<uint32_t>(graph->node_indices_);
++      subGraph.emplace_back(tmp);
++    }
++
++    MS_LOG(INFO) << "Start copying model";
++    auto *ret_model = new (std::nothrow) Model();
++    if (ret_model == nullptr) {
++      MS_LOG(ERROR) << "new Model failed.";
++      return nullptr;
++    }
++    ret_model->name = lite_graph->name_;
++    ret_model->inputIndex = lite_graph->input_indices_;
++    ret_model->outputIndex = lite_graph->output_indices_;
++    ret_model->nodes = nodes;
++    ret_model->allTensors = allTensors;
++    ret_model->subGraph = subGraph;
++    MS_LOG(INFO) << "MindIR_LiteGraph_To_Model success";
++    return ret_model;
++  } else {
++    MS_LOG(ERROR) << "lite graph is nullptr";
++    return nullptr;
++  }
++}
++
++}  // namespace lite
++}  // namespace mindspore
+\ No newline at end of file
+diff --git a/mindspore/lite/mindir/src/mindir_tensor.cc b/mindspore/lite/mindir/src/mindir_tensor.cc
+index a62ec257..2e453438 100644
+--- a/mindspore/lite/mindir/src/mindir_tensor.cc
++++ b/mindspore/lite/mindir/src/mindir_tensor.cc
+@@ -18,6 +18,7 @@
+ #include "utils.h"
+ #include "mindir_memory_manager.h"
+ #include "nnrt/v1_0/nnrt_types.h"
++#include "nnrt/v2_0/nnrt_types.h"
+ 
+ using namespace OHOS::HDI::Nnrt::V1_0;
+ 
+@@ -237,12 +238,48 @@ void MindIR_Tensor_SetFormat(TensorPtr *tensor, Format format) {
+   }
+ }
+ 
+-SharedBuffer MindIR_Tensor_GetData(ConstTensorPtr tensor, const SharedBuffer &buffer_templete, uint8_t *mmap_ptr,
+-                                   unsigned int offset) {
++OHOS::HDI::Nnrt::V1_0::SharedBuffer MindIR_Tensor_GetData(ConstTensorPtr tensor,
++                                   const OHOS::HDI::Nnrt::V1_0::SharedBuffer &buffer_templete,
++                                   uint8_t *mmap_ptr, unsigned int offset) {
+   if (tensor != nullptr) {
+     auto value = static_cast<const schema::Tensor *>(tensor);
+     if (value != nullptr) {
+-      SharedBuffer result{};
++      OHOS::HDI::Nnrt::V1_0::SharedBuffer result{};
++
++      if (value->data() == nullptr || value->data()->size() == 0) {
++        result.fd = -1;
++        result.bufferSize = buffer_templete.bufferSize;
++        result.offset = offset;
++        result.dataSize = 0;
++        return result;
++      }
++      if (mmap_ptr == nullptr) {
++        MS_LOG(ERROR) << "Tensor GetData failed, mmap pointer should not be nullptr";
++        return {-1, 0, offset, 0};
++      }
++      result.fd = buffer_templete.fd;
++      result.bufferSize = buffer_templete.bufferSize;
++      //      MS_LOG(ERROR) << "offset:" << offset << ",src->size():" << value->data()->size();
++      memcpy(mmap_ptr + offset, value->data()->data(), value->data()->size());
++      result.offset = offset;
++      result.dataSize = value->data()->size();
++      return result;
++    } else {
++      MS_LOG(WARNING) << "Tensor GetData failed, mmap pointer should not be nullptr";
++      return {-1, 0, offset, 0};
++    }
++  } else {
++    return {-1, 0, offset, 0};
++  }
++}
++
++OHOS::HDI::Nnrt::V2_0::SharedBuffer MindIR_Tensor_GetData_V2_0(ConstTensorPtr tensor,
++                                   const OHOS::HDI::Nnrt::V2_0::SharedBuffer &buffer_templete,
++                                   uint8_t *mmap_ptr, unsigned int offset) {
++  if (tensor != nullptr) {
++    auto value = static_cast<const schema::Tensor *>(tensor);
++    if (value != nullptr) {
++      OHOS::HDI::Nnrt::V2_0::SharedBuffer result{};
+ 
+       if (value->data() == nullptr || value->data()->size() == 0) {
+         result.fd = -1;

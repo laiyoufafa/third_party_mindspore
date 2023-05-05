@@ -1,0 +1,99 @@
+From 9eef7081d9d73994498eb0dde7aa0c1975c8902a Mon Sep 17 00:00:00 2001
+From: Zhu Guodong <zhuguodong0001@163.com>
+Date: Fri, 7 Apr 2023 14:48:57 +0800
+Subject: [PATCH] mindir add custom op
+
+Signed-off-by: Zhu Guodong <zhuguodong0001@163.com>
+---
+ mindspore/lite/mindir/include/mindir.h       |  8 +++++
+ mindspore/lite/mindir/include/mindir_types.h |  1 +
+ mindspore/lite/mindir/src/mindir.cc          | 36 ++++++++++++++++++++
+ 3 files changed, 45 insertions(+)
+
+diff --git a/mindspore/lite/mindir/include/mindir.h b/mindspore/lite/mindir/include/mindir.h
+index 73cd6898..ae72cc9b 100644
+--- a/mindspore/lite/mindir/include/mindir.h
++++ b/mindspore/lite/mindir/include/mindir.h
+@@ -30,6 +30,10 @@ struct Model;
+ }  // namespace OHOS
+ 
+ namespace mindspore {
++namespace schema {
++struct Attribute;
++}
++
+ namespace lite {
+ 
+ // ********** Model **********
+@@ -418,6 +422,10 @@ PrimitivePtr MindIR_Unsqueeze_CreatePrimitive(const std::vector<int64_t> &axis);
+ std::vector<int64_t> MindIR_Unsqueeze_GetAxis(ConstPrimitivePtr primitive);
+ void MindIR_Unsqueeze_SetAxis(PrimitivePtr *primitive, const std::vector<int64_t> &axis);
+ 
++// ********** Custom **********
++std::vector<const mindspore::schema::Attribute *> MindIR_Custom_GetAttr(ConstPrimitivePtr primitive);
++std::string MindIR_Attribute_GetName(const mindspore::schema::Attribute &attr);
++std::vector<uint8_t> MindIR_Attribute_GetData(const mindspore::schema::Attribute &attr);
+ }  // namespace lite
+ }  // namespace mindspore
+ #endif
+diff --git a/mindspore/lite/mindir/include/mindir_types.h b/mindspore/lite/mindir/include/mindir_types.h
+index 8f2a9c70..ad272f8e 100644
+--- a/mindspore/lite/mindir/include/mindir_types.h
++++ b/mindspore/lite/mindir/include/mindir_types.h
+@@ -101,6 +101,7 @@ enum NodeType : uint32_t {
+   NODE_TYPE_TOPK_FUSION = 161,
+   NODE_TYPE_TRANSPOSE = 162,
+   NODE_TYPE_UNSQUEEZE = 165,
++  NODE_TYPE_CUSTOM = 191,
+ };
+ 
+ enum ResizeMethod : int8_t {
+diff --git a/mindspore/lite/mindir/src/mindir.cc b/mindspore/lite/mindir/src/mindir.cc
+index c2a1cd3f..dd249738 100644
+--- a/mindspore/lite/mindir/src/mindir.cc
++++ b/mindspore/lite/mindir/src/mindir.cc
+@@ -4254,5 +4254,41 @@ void MindIR_Unsqueeze_SetAxis(PrimitivePtr *primitive, const std::vector<int64_t
+   }
+ }
+ 
++// ********** Custom **********
++std::vector<const mindspore::schema::Attribute *> MindIR_Custom_GetAttr(ConstPrimitivePtr primitive) {
++  if (primitive == nullptr) {
++    return {};
++  }
++  auto prim = static_cast<const schema::Primitive *>(primitive);
++  auto value = prim->value_as_Custom();
++  if (value == nullptr) {
++    return {};
++  }
++  std::vector<const mindspore::schema::Attribute *> result;
++  if (value->attr() == nullptr) {
++    return {};
++  }
++  for (auto attr: *(value->attr())) {
++    result.push_back(attr);
++  }
++  return result;
++}
++
++std::string MindIR_Attribute_GetName(const mindspore::schema::Attribute &attr) {
++  if (attr.name() == nullptr) {
++    return "";
++  }
++  return attr.name()->str();
++}
++
++std::vector<uint8_t> MindIR_Attribute_GetData(const mindspore::schema::Attribute &attr) {
++  if (attr.data() == nullptr) {
++    return {};
++  }
++  std::vector<uint8_t> tmp_data(attr.data()->size());
++  std::transform(attr.data()->begin(), attr.data()->end(), tmp_data.begin(),
++                  [](uint8_t item) { return item; });
++  return tmp_data;
++}
+ }  // namespace lite
+ }  // namespace mindspore
+-- 
+2.34.1
+
